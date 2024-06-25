@@ -19,6 +19,8 @@
 #define Z_ERR -1
 #define Z_BLOCK -2
 
+int recv_buf_bytes(int fd, buf_t *buf, size_t nbytes, size_t *num_bytes_received);
+
 int recv_buf(int fd, buf_t *buf);
 int send_buf(int fd, buf_t *buf);
 

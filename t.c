@@ -10,6 +10,12 @@
 #include "clib.h"
 #include "cnet.h"
 
+// A message is a \n terminated utf-8 line of text:
+// login <username> "<password>"\n
+// logout\n
+// send_message <to_username> <num_bytes>\n
+// [message of num_bytes len] NULL
+
 typedef struct {
     int fd;
     buf_t *buf;
