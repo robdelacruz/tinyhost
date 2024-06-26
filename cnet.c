@@ -13,57 +13,12 @@
 // Number of bytes to send/recv at a time.
 #define NET_BUFSIZE 512
 
-// Reads up to nbytes into buffer.
-// Returns one of the following:
-//    1 (Z_OPEN) for socket open (socket data available)
-//    0 (Z_EOF) for EOF
-//   -1 (Z_ERR) for error
-//   -2 (Z_BLOCK) for blocked socket (no socket data available)
-// On return, num_bytes_received contains the number of bytes read.
-int recv_buf_bytes(int fd, buf_t *buf, size_t nbytes, size_t *num_bytes_received) {
-    int z;
-    char readbuf[NET_BUFSIZE];
-
-    size_t nread = 0;
-    while (nread < nbytes) {
-        // read minimum of sizeof(readbuf) and nbytes-nread
-        int nblock = nbytes-nread;
-        if (nblock > sizeof(readbuf))
-            nblock = sizeof(readbuf);
-
-        z = recv(fd, readbuf, nblock, MSG_DONTWAIT);
-        if (z == 0) {
-            z = Z_EOF;
-            break;
-        }
-        if (z == -1 && errno == EINTR) {
-            continue;
-        }
-        if (z == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            z = Z_BLOCK;
-            break;
-        }
-        if (z == -1) {
-            z = Z_ERR;
-            break;
-        }
-        assert(z > 0);
-        buf_append(buf, readbuf, z);
-        nread += z;
-    }
-    if (z > 0) {
-        z = Z_OPEN;
-    }
-    *num_bytes_received = nread;
-    return z;
-}
-
 // Cumulatively reads socket bytes into buffer.
 // Returns one of the following:
 //    0 (Z_EOF) for EOF
 //   -1 (Z_ERR) for error
 //   -2 (Z_BLOCK) for blocked socket (no data)
-int recv_buf(int fd, buf_t *buf) {
+int recv_buf_flush(int fd, buf_t *buf) {
     int z;
     char readbuf[NET_BUFSIZE];
     while (1) {
@@ -95,7 +50,7 @@ int recv_buf(int fd, buf_t *buf) {
 //    0 (Z_EOF) for all buf bytes sent
 //   -1 (Z_ERR) for error
 //   -2 (Z_BLOCK) for blocked socket
-int send_buf(int fd, buf_t *buf) {
+int send_buf_flush(int fd, buf_t *buf) {
     int z;
     while (1) {
         int nwrite = buf->len - buf->cur;
@@ -124,6 +79,130 @@ int send_buf(int fd, buf_t *buf) {
     assert(z <= 0);
     return z;
 }
+
+// Reads up to nbytes into buffer.
+// Returns one of the following:
+//    1 (Z_OPEN) for socket open (socket data available)
+//    0 (Z_EOF) for EOF
+//   -1 (Z_ERR) for error
+//   -2 (Z_BLOCK) for blocked socket (no socket data available)
+// On return, num_bytes_received contains the number of bytes read.
+int recv_buf(int fd, buf_t *buf, size_t nbytes, size_t *num_bytes_received) {
+    int z;
+    char readbuf[NET_BUFSIZE];
+    size_t nread = 0;
+
+    if (nbytes == 0)
+        nbytes = sizeof(readbuf);
+
+    while (nread < nbytes) {
+        // receive as much bytes as readbuf can hold
+        int nblock = nbytes-nread;
+        if (nblock > sizeof(readbuf))
+            nblock = sizeof(readbuf);
+
+        z = recv(fd, readbuf, nblock, MSG_DONTWAIT);
+        if (z == 0) {
+            z = Z_EOF;
+            break;
+        }
+        if (z == -1 && errno == EINTR) {
+            continue;
+        }
+        if (z == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            z = Z_BLOCK;
+            break;
+        }
+        if (z == -1) {
+            z = Z_ERR;
+            break;
+        }
+        assert(z > 0);
+        buf_append(buf, readbuf, z);
+        nread += z;
+    }
+    if (z > 0) {
+        z = Z_OPEN;
+    }
+    if (num_bytes_received != NULL)
+        *num_bytes_received = nread;
+    return z;
+}
+
+int recv_line(int fd, buf_t *buf, size_t nbytes, str_t *ret_line, int *ret_line_complete) {
+    int z;
+    char readbuf[NET_BUFSIZE];
+    size_t nread = 0;
+
+    if (nbytes == 0)
+        nbytes = sizeof(readbuf);
+
+    while (nread < nbytes) {
+        // receive as much bytes as readbuf can hold
+        int nblock = nbytes-nread;
+        if (nblock > sizeof(readbuf))
+            nblock = sizeof(readbuf);
+
+        z = recv(fd, buf, nblock, MSG_DONTWAIT);
+        if (z == 0) {
+            z = Z_EOF;
+            break;
+        }
+        if (z == -1 && errno == EINTR) {
+            continue;
+        }
+        if (z == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            z = Z_BLOCK;
+            break;
+        }
+        if (z == -1) {
+            z = Z_ERR;
+            break;
+        }
+        assert(z > 0);
+        buf_append(buf, readbuf, z);
+        nread += z;
+    }
+    if (z > 0) {
+        z = Z_OPEN;
+    }
+
+    // a.bc
+    // cur=1
+    // len=4
+    //
+    // abc.
+    // cur=3 
+    // len=4
+    //
+    // .abc
+    // cur=0
+    // len=4
+    //
+    // .
+    // cur=0
+    // len=1
+    for (int i=0; i < buf->len; i++) {
+        if (buf->p[i] == '\n') {
+            // return line read to ret_line, excluding '\n'
+            buf->p[i] = '\0';
+            str_assign(ret_line, buf->p);
+            *ret_line_complete = 1;
+
+            // reset buf with the remaining chars to the right of '\n' 
+            int num_extrachars = buf->len - (i+1);
+            memcpy(buf->p, buf->p+i+1, num_extrachars);
+            buf->len = num_extrachars;
+            memset(buf->p + buf->len, 0, buf->cap - buf->len);
+
+            return z;
+        }
+    }
+
+    *ret_line_complete = 0;
+    return z;
+}
+
 
 // Return new socket fd for listening or -1 for error.
 int open_listen_sock(char *host, char *port, int backlog, struct sockaddr *psa) {

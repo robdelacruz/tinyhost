@@ -19,10 +19,11 @@
 #define Z_ERR -1
 #define Z_BLOCK -2
 
-int recv_buf_bytes(int fd, buf_t *buf, size_t nbytes, size_t *num_bytes_received);
+int recv_buf_flush(int fd, buf_t *buf);
+int send_buf_flush(int fd, buf_t *buf);
 
-int recv_buf(int fd, buf_t *buf);
-int send_buf(int fd, buf_t *buf);
+int recv_buf(int fd, buf_t *buf, size_t nbytes, size_t *num_bytes_received);
+int recv_line(int fd, buf_t *buf, size_t nbytes, str_t *ret_line, int *ret_line_complete);
 
 int open_listen_sock(char *host, char *port, int backlog, struct sockaddr *psa);
 int open_connect_sock(char *host, char *port, struct sockaddr *psa);

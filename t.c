@@ -13,24 +13,35 @@
 // A message is a \n terminated utf-8 line of text:
 // login <username> "<password>"\n
 // logout\n
-// send_message <to_username> <num_bytes>\n
-// [message of num_bytes len] NULL
+// send_message <to_username>\n
+// <message length>\n
+// <message>
+
+typedef enum {
+    MSG_NONE=0,
+    MSG_CMD,
+    MSG_COMPLETE,
+} msgstate_t;
 
 typedef struct {
     int fd;
     buf_t *buf;
-} netpipe_t;
+    str_t *cmd;
+    buf_t *body;
+    msgstate_t msgstate;
+} clientctx_t;
+
+clientctx_t *clientctx_new(int fd);
+void clientctx_free(clientctx_t *ctx);
+clientctx_t *find_clientctx(array_t *ctxs, int fd);
+void delete_clientctx(array_t *ctxs, int fd);
 
 void handle_sigint(int sig);
 void handle_sigchld(int sig);
 
-netpipe_t *netpipe_new(int fd);
-void netpipe_free(netpipe_t *np);
-netpipe_t *find_netpipe(array_t *nps, int fd);
-
 fd_set _readfds;
 int _maxfd=0;
-array_t *_readpipes;
+array_t *_ctxs;
 
 int main(int argc, char *argv[]) {
     int z;
@@ -56,7 +67,7 @@ int main(int argc, char *argv[]) {
     FD_SET(s0, &_readfds);
     _maxfd = s0;
 
-    _readpipes = array_new(0, (voidpfunc_t)netpipe_free);
+    _ctxs = array_new(0, (voidpfunc_t)clientctx_free);
 
     while (1) {
         fd_set readfds = _readfds;
@@ -89,8 +100,8 @@ int main(int argc, char *argv[]) {
                     _maxfd = clientfd;
 
                 // Add new client pipe
-                netpipe_t *np = netpipe_new(clientfd);
-                array_add(_readpipes, np);
+                clientctx_t *ctx = clientctx_new(clientfd);
+                array_add(_ctxs, ctx);
 
                 printf("new clientfd: %d\n", clientfd);
                 continue;
@@ -99,30 +110,32 @@ int main(int argc, char *argv[]) {
                 int readfd = i;
                 printf("read data from clientfd %d\n", readfd);
 
-                netpipe_t *np = find_netpipe(_readpipes, readfd);
-                assert(np != NULL);
+                clientctx_t *ctx = find_clientctx(_ctxs, readfd);
+                assert(ctx != NULL);
 
-                z = recv_buf(readfd, np->buf);
-                printf("z: %d\n", z);
-                if (z == Z_ERR)
-                    print_error("recv_buf()");
-                if (z == Z_EOF) {
-                    buf_append(np->buf, "\0", 1);
-                    printf("Received from clientfd %d:\n%s\n", readfd, np->buf->p);
-
-                    for (int i=0; i < _readpipes->len; i++) {
-                        netpipe_t *np = _readpipes->items[i];
-                        if (np->fd == readfd) {
-                            array_del(_readpipes, i);
-                            break;
+                if (ctx->msgstate == MSG_NONE) {
+                    int hasline = 0;
+                    z = recv_line(readfd, ctx->buf, 0, ctx->cmd, &hasline);
+                    if (z == Z_ERR) {
+                        print_error("recv_line()");
+                    } else if (z == Z_EOF) {
+                        printf("client %d eof\n", readfd);
+                        FD_CLR(readfd, &_readfds);
+                        shutdown(readfd, SHUT_RD);
+                    } else {
+                        if (hasline) {
+                            ctx->msgstate = MSG_CMD;
+                            // todo: see if ctx->msg requires a body
                         }
                     }
-                    FD_CLR(readfd, &_readfds);
-                    shutdown(readfd, SHUT_RD);
                 }
             }
-        }
-    }
+        } // for _maxfd
+
+        // todo: Loop through _ctxs to see which has msgstate == MSG_COMPLETE
+        //       and execute the command.
+
+    } // while (1)
 
     str_free(serveripaddr);
     return 0;
@@ -141,23 +154,37 @@ void handle_sigchld(int sig) {
     errno = tmp_errno;
 }
 
-netpipe_t *netpipe_new(int fd) {
-    netpipe_t *np = malloc(sizeof(netpipe_t));
-    np->fd = fd;
-    np->buf = buf_new(0);
-    return np;
+clientctx_t *clientctx_new(int fd) {
+    clientctx_t *ctx = malloc(sizeof(clientctx_t));
+    ctx->fd = fd;
+    ctx->buf = buf_new(0);
+    ctx->cmd = str_new(0);
+    ctx->body = buf_new(0);
+    ctx->msgstate = MSG_NONE;
+    return ctx;
 }
-void netpipe_free(netpipe_t *np) {
-    buf_free(np->buf);
-    free(np);
+void clientctx_free(clientctx_t *ctx) {
+    buf_free(ctx->buf);
+    str_free(ctx->cmd);
+    buf_free(ctx->body);
+    free(ctx);
 }
-netpipe_t *find_netpipe(array_t *nps, int fd) {
-    for (int i=0; i < nps->len; i++) {
-        netpipe_t *np = (netpipe_t *) nps->items[i];
-        if (np->fd == fd)
-            return np;
+clientctx_t *find_clientctx(array_t *ctxs, int fd) {
+    for (int i=0; i < ctxs->len; i++) {
+        clientctx_t *ctx = (clientctx_t *) ctxs->items[i];
+        if (ctx->fd == fd)
+            return ctx;
     }
     return NULL;
+}
+void delete_clientctx(array_t *ctxs, int fd) {
+    for (int i=0; i < _ctxs->len; i++) {
+        clientctx_t *ctx = _ctxs->items[i];
+        if (ctx->fd == fd) {
+            array_del(_ctxs, i);
+            break;
+        }
+    }
 }
 
 
