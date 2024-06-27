@@ -10,17 +10,28 @@
 #include "clib.h"
 #include "cnet.h"
 
-// A message is a \n terminated utf-8 line of text:
-// login <username> "<password>"\n
-// logout\n
-// send_message <to_username>\n
-// <message length>\n
-// <message>
+// Message format:
+//
+// tinyhost/0.1 login\n
+// hostname: rob\n
+// password: tiny\n
+// \n
+//
+// tinyhost/0.1 logout\n
+// \n
+//
+// tinyhost/0.1 send message\n
+// hostname: guest1\n
+// body-length: 12\n
+// \n
+// Hello guest1
+//
 
 typedef enum {
-    MSG_NONE=0,
-    MSG_CMD,
-    MSG_COMPLETE,
+    READING_CMD=0,
+    READING_ARGS,
+    READING_BODY,
+    READING_COMPLETE,
 } msgstate_t;
 
 typedef struct {
@@ -113,20 +124,53 @@ int main(int argc, char *argv[]) {
                 clientctx_t *ctx = find_clientctx(_ctxs, readfd);
                 assert(ctx != NULL);
 
-                if (ctx->msgstate == MSG_NONE) {
-                    int hasline = 0;
+                int hasline=0;
+                if (ctx->msgstate == READING_CMD) {
                     z = recv_line(readfd, ctx->buf, 0, ctx->cmd, &hasline);
                     if (z == Z_ERR) {
                         print_error("recv_line()");
-                    } else if (z == Z_EOF) {
-                        printf("client %d eof\n", readfd);
+                    }
+                    if (z == Z_EOF) {
                         FD_CLR(readfd, &_readfds);
                         shutdown(readfd, SHUT_RD);
-                    } else {
-                        if (hasline) {
-                            ctx->msgstate = MSG_CMD;
-                            // todo: see if ctx->msg requires a body
+                    }
+                    if (hasline) {
+                        ctx->msgstate = READING_ARGS;
+                    }
+                    continue;
+                }
+                if (ctx->msgstate == READING_ARGS) {
+                    str_t *argline = str_new(0);
+                    z = recv_line(readfd, ctx->buf, 0, argline, &hasline);
+                    if (z == Z_ERR) {
+                        print_error("recv_line()");
+                    }
+                    if (z == Z_EOF) {
+                        FD_CLR(readfd, &_readfds);
+                        shutdown(readfd, SHUT_RD);
+                    }
+                    if (hasline) {
+                        if (argline->len == 0) {
+                            // if body_length arg > 0, READING_COMPLETE
+                            ctx->msgstate = READING_BODY;
+                        } else {
+                            ctx->msgstate == READING_ARGS;
+                            // todo: read arg from argline
                         }
+                    }
+                    continue;
+                }
+                if (ctx->msgstate == READING_BODY) {
+                    int body_len = 1; // todo: read body_length arg
+                    // todo: use recv_buf_buflen() or something like
+                    // that to receive max limit bytes in buf.
+                    z = recv_buf(readfd, ctx->buf, body_len, NULL);
+                    if (z == Z_ERR) {
+                        print_error("recv_buf()");
+                    }
+                    if (z == Z_EOF) {
+                        FD_CLR(readfd, &_readfds);
+                        shutdown(readfd, SHUT_RD);
                     }
                 }
             }
@@ -160,7 +204,7 @@ clientctx_t *clientctx_new(int fd) {
     ctx->buf = buf_new(0);
     ctx->cmd = str_new(0);
     ctx->body = buf_new(0);
-    ctx->msgstate = MSG_NONE;
+    ctx->msgstate = READING_CMD;
     return ctx;
 }
 void clientctx_free(clientctx_t *ctx) {
