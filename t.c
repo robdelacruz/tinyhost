@@ -12,7 +12,7 @@
 
 // Message format:
 //
-// tinyhost/0.1 login\n
+// TH/0.1 login\n
 // hostname: rob\n
 // password: tiny\n
 // \n
@@ -20,7 +20,7 @@
 // tinyhost/0.1 logout\n
 // \n
 //
-// tinyhost/0.1 send message\n
+// TH/0.1 send message\n
 // hostname: guest1\n
 // body-length: 12\n
 // \n
@@ -28,7 +28,7 @@
 //
 
 typedef enum {
-    READING_CMD=0,
+    READING_HEAD=0,
     READING_ARGS,
     READING_BODY,
     READING_COMPLETE,
@@ -37,13 +37,17 @@ typedef enum {
 typedef struct {
     int fd;
     buf_t *buf;
+    str_t *ver;
     str_t *cmd;
+    array_t *args;
     buf_t *body;
+    int body_len;
     msgstate_t msgstate;
 } clientctx_t;
 
 clientctx_t *clientctx_new(int fd);
 void clientctx_free(clientctx_t *ctx);
+void clientctx_set_arg(clientctx_t *ctx, char *arg_key, char *arg_val);
 clientctx_t *find_clientctx(array_t *ctxs, int fd);
 void delete_clientctx(array_t *ctxs, int fd);
 
@@ -61,6 +65,9 @@ int main(int argc, char *argv[]) {
     char *hostname = "localhost";
     char *port = "8001";
     str_t *serveripaddr = str_new(0);
+    str_t *strline = str_new(0);
+    int hasline = 0;
+    int hasbody = 0;
 
     signal(SIGPIPE, SIG_IGN);           // Don't abort on SIGPIPE
     signal(SIGINT, handle_sigint);      // exit on CTRL-C
@@ -124,9 +131,8 @@ int main(int argc, char *argv[]) {
                 clientctx_t *ctx = find_clientctx(_ctxs, readfd);
                 assert(ctx != NULL);
 
-                int hasline=0;
-                if (ctx->msgstate == READING_CMD) {
-                    z = recv_line(readfd, ctx->buf, 0, ctx->cmd, &hasline);
+                if (ctx->msgstate == READING_HEAD) {
+                    z = recv_line(readfd, ctx->buf, 0, strline, &hasline);
                     if (z == Z_ERR) {
                         print_error("recv_line()");
                     }
@@ -135,13 +141,15 @@ int main(int argc, char *argv[]) {
                         shutdown(readfd, SHUT_RD);
                     }
                     if (hasline) {
+                        str_assign(ctx->cmd, strline->s);
+                        str_assign(strline, "");
                         ctx->msgstate = READING_ARGS;
+                        printf("READING_HEAD cmd: '%s'\n", ctx->cmd->s);
                     }
                     continue;
                 }
                 if (ctx->msgstate == READING_ARGS) {
-                    str_t *argline = str_new(0);
-                    z = recv_line(readfd, ctx->buf, 0, argline, &hasline);
+                    z = recv_line(readfd, ctx->buf, 0, strline, &hasline);
                     if (z == Z_ERR) {
                         print_error("recv_line()");
                     }
@@ -150,27 +158,51 @@ int main(int argc, char *argv[]) {
                         shutdown(readfd, SHUT_RD);
                     }
                     if (hasline) {
-                        if (argline->len == 0) {
-                            // if body_length arg > 0, READING_COMPLETE
-                            ctx->msgstate = READING_BODY;
+                        // Empty line read, no more args.
+                        if (strline->len == 0) {
+                            if (ctx->body_len == 0)
+                                ctx->msgstate == READING_COMPLETE;
+                            else
+                                ctx->msgstate = READING_BODY;
                         } else {
-                            ctx->msgstate == READING_ARGS;
-                            // todo: read arg from argline
+                            // Read one arg line: "key: val"
+                            char *k = strline->s;
+                            char *v = strchr(strline->s, ':');
+                            if (v == NULL)
+                                continue;
+
+                            // v points to ':', move to first char of val
+                            *v = '\0';
+                            v++;
+                            while (*v == ' ') {
+                                *v = '\0';
+                                v++;
+                            }
+                            clientctx_set_arg(ctx, k, v);
+                            printf("READING_ARGS k: '%s', v: '%s'\n", k, v);
+
+                            if (strcmp(k, "body-length") == 0)
+                                ctx->body_len = atoi(v);
                         }
                     }
                     continue;
                 }
                 if (ctx->msgstate == READING_BODY) {
-                    int body_len = 1; // todo: read body_length arg
-                    // todo: use recv_buf_buflen() or something like
-                    // that to receive max limit bytes in buf.
-                    z = recv_buf(readfd, ctx->buf, body_len, NULL);
+                    assert(ctx->body_len > 0);
+                    if (ctx->body_len == 0) {
+                        ctx->msgstate = READING_COMPLETE;
+                        continue;
+                    }
+                    z = recv_bytes(readfd, ctx->buf, 0, ctx->body_len, ctx->body, &hasbody);
                     if (z == Z_ERR) {
                         print_error("recv_buf()");
                     }
                     if (z == Z_EOF) {
                         FD_CLR(readfd, &_readfds);
                         shutdown(readfd, SHUT_RD);
+                    }
+                    if (hasbody) {
+                        ctx->msgstate = READING_COMPLETE;
                     }
                 }
             }
@@ -182,6 +214,7 @@ int main(int argc, char *argv[]) {
     } // while (1)
 
     str_free(serveripaddr);
+    str_free(strline);
     return 0;
 }
 
@@ -203,8 +236,10 @@ clientctx_t *clientctx_new(int fd) {
     ctx->fd = fd;
     ctx->buf = buf_new(0);
     ctx->cmd = str_new(0);
+    ctx->args = array_new(0, (voidpfunc_t) array_free);
     ctx->body = buf_new(0);
-    ctx->msgstate = READING_CMD;
+    ctx->body_len = 0;
+    ctx->msgstate = READING_HEAD;
     return ctx;
 }
 void clientctx_free(clientctx_t *ctx) {
@@ -212,6 +247,29 @@ void clientctx_free(clientctx_t *ctx) {
     str_free(ctx->cmd);
     buf_free(ctx->body);
     free(ctx);
+}
+void clientctx_set_arg(clientctx_t *ctx, char *arg_key, char *arg_val) {
+    array_t *kv;
+    str_t *k, *v;
+
+    for (int i=0; i < ctx->args->len; i++) {
+        kv = (array_t *) ctx->args->items[i];
+        assert(kv->len == 2);
+        k = kv->items[0];
+        v = kv->items[1];
+
+        // Overwrite arg if it already exists.
+        if (strcmp(k->s, arg_key) == 0) {
+            str_assign(k, arg_key);
+            str_assign(v, arg_val);
+            return;
+        }
+    }
+    // Add new arg.
+    k = str_new_assign(arg_key);
+    v = str_new_assign(arg_val);
+    kv = array_new(2, (voidpfunc_t) str_free);
+    array_add(ctx->args, kv);
 }
 clientctx_t *find_clientctx(array_t *ctxs, int fd) {
     for (int i=0; i < ctxs->len; i++) {

@@ -97,6 +97,11 @@ void str_free(str_t *str) {
     free(str->s);
     free(str);
 }
+str_t *str_new_assign(const char *s) {
+    str_t *str = str_new(strlen(s)+1);
+    str_assign(str, s);
+    return str;
+}
 void str_assign(str_t *str, const char *s) {
     size_t s_len = strlen(s);
     if (s_len+1 > str->cap) {

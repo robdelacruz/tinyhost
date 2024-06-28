@@ -203,6 +203,69 @@ int recv_line(int fd, buf_t *buf, size_t nbytes, str_t *ret_line, int *ret_line_
     return z;
 }
 
+// Cumulatively receive into buf until recvbufsize bytes are accumulated.
+// Returns one of the following:
+//    1 (Z_OPEN) for socket open (socket data available)
+//    0 (Z_EOF) for EOF
+//   -1 (Z_ERR) for error
+//   -2 (Z_BLOCK) for blocked socket (no socket data available)
+// On return, if recvbufsize bytes were accumulated:
+//   ret_buf contains the bytes and *ret_buf_complete set to 1.
+// If accumulated bytes less than recvbufsize, *ret_buf_complete set to 0.
+int recv_bytes(int fd, buf_t *buf, size_t nbytes, size_t recvbufsize, buf_t *ret_buf, int *ret_buf_complete) {
+    int z;
+    char readbuf[NET_BUFSIZE];
+    size_t nread = 0;
+
+    if (nbytes == 0)
+        nbytes = sizeof(readbuf);
+
+    while (nread < nbytes) {
+        // receive as much bytes as readbuf can hold
+        int nblock = nbytes-nread;
+        if (nblock > sizeof(readbuf))
+            nblock = sizeof(readbuf);
+
+        z = recv(fd, readbuf, nblock, MSG_DONTWAIT);
+        if (z == 0) {
+            z = Z_EOF;
+            break;
+        }
+        if (z == -1 && errno == EINTR) {
+            continue;
+        }
+        if (z == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            z = Z_BLOCK;
+            break;
+        }
+        if (z == -1) {
+            z = Z_ERR;
+            break;
+        }
+        assert(z > 0);
+        buf_append(buf, readbuf, z);
+        nread += z;
+    }
+    if (z > 0) {
+        z = Z_OPEN;
+    }
+
+    if (buf->len >= recvbufsize) {
+        buf_clear(ret_buf);
+        buf_append(ret_buf, buf->p, recvbufsize);
+        *ret_buf_complete = 1;
+
+        int num_extrabytes = recvbufsize - buf->len;
+        memcpy(buf->p, buf->p + recvbufsize, num_extrabytes);
+        buf->len = num_extrabytes;
+        memset(buf->p + buf->len, 0, buf->cap - buf->len);
+    }
+
+    *ret_buf_complete = 0;
+    return z;
+}
+
+
 
 // Return new socket fd for listening or -1 for error.
 int open_listen_sock(char *host, char *port, int backlog, struct sockaddr *psa) {

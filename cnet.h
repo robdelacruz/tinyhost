@@ -24,6 +24,7 @@ int send_buf_flush(int fd, buf_t *buf);
 
 int recv_buf(int fd, buf_t *buf, size_t nbytes, size_t *num_bytes_received);
 int recv_line(int fd, buf_t *buf, size_t nbytes, str_t *ret_line, int *ret_line_complete);
+int recv_bytes(int fd, buf_t *buf, size_t nbytes, size_t recvbufsize, buf_t *ret_buf, int *ret_buf_complete);
 
 int open_listen_sock(char *host, char *port, int backlog, struct sockaddr *psa);
 int open_connect_sock(char *host, char *port, struct sockaddr *psa);
