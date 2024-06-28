@@ -23,7 +23,6 @@ int recv_buf_flush(int fd, buf_t *buf) {
     char readbuf[NET_BUFSIZE];
     while (1) {
         z = recv(fd, readbuf, sizeof(readbuf), MSG_DONTWAIT);
-        printf("recv_buf() z: %d\n", z);
         if (z == 0) {
             z = Z_EOF;
             break;
@@ -143,7 +142,7 @@ int recv_line(int fd, buf_t *buf, size_t nbytes, str_t *ret_line, int *ret_line_
         if (nblock > sizeof(readbuf))
             nblock = sizeof(readbuf);
 
-        z = recv(fd, buf, nblock, MSG_DONTWAIT);
+        z = recv(fd, readbuf, nblock, MSG_DONTWAIT);
         if (z == 0) {
             z = Z_EOF;
             break;
@@ -259,6 +258,8 @@ int recv_bytes(int fd, buf_t *buf, size_t nbytes, size_t recvbufsize, buf_t *ret
         memcpy(buf->p, buf->p + recvbufsize, num_extrabytes);
         buf->len = num_extrabytes;
         memset(buf->p + buf->len, 0, buf->cap - buf->len);
+
+        return z;
     }
 
     *ret_buf_complete = 0;

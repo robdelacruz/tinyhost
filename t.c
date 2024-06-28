@@ -31,7 +31,6 @@ typedef enum {
     READING_HEAD=0,
     READING_ARGS,
     READING_BODY,
-    READING_COMPLETE,
 } msgstate_t;
 
 typedef struct {
@@ -131,80 +130,112 @@ int main(int argc, char *argv[]) {
                 clientctx_t *ctx = find_clientctx(_ctxs, readfd);
                 assert(ctx != NULL);
 
-                if (ctx->msgstate == READING_HEAD) {
-                    z = recv_line(readfd, ctx->buf, 0, strline, &hasline);
-                    if (z == Z_ERR) {
-                        print_error("recv_line()");
-                    }
-                    if (z == Z_EOF) {
-                        FD_CLR(readfd, &_readfds);
-                        shutdown(readfd, SHUT_RD);
-                    }
-                    if (hasline) {
+                while (1) {
+                    if (ctx->msgstate == READING_HEAD) {
+                        z = recv_line(readfd, ctx->buf, 0, strline, &hasline);
+                        if (z == Z_ERR) {
+                            print_error("recv_line()");
+                        }
+                        if (z == Z_EOF) {
+                            FD_CLR(readfd, &_readfds);
+                            shutdown(readfd, SHUT_RD);
+                        }
+                        if (!hasline)
+                            break;
+
                         str_assign(ctx->cmd, strline->s);
                         str_assign(strline, "");
                         ctx->msgstate = READING_ARGS;
-                        printf("READING_HEAD cmd: '%s'\n", ctx->cmd->s);
-                    }
-                    continue;
-                }
-                if (ctx->msgstate == READING_ARGS) {
-                    z = recv_line(readfd, ctx->buf, 0, strline, &hasline);
-                    if (z == Z_ERR) {
-                        print_error("recv_line()");
-                    }
-                    if (z == Z_EOF) {
-                        FD_CLR(readfd, &_readfds);
-                        shutdown(readfd, SHUT_RD);
-                    }
-                    if (hasline) {
-                        // Empty line read, no more args.
-                        if (strline->len == 0) {
-                            if (ctx->body_len == 0)
-                                ctx->msgstate == READING_COMPLETE;
-                            else
-                                ctx->msgstate = READING_BODY;
-                        } else {
-                            // Read one arg line: "key: val"
-                            char *k = strline->s;
-                            char *v = strchr(strline->s, ':');
-                            if (v == NULL)
-                                continue;
-
-                            // v points to ':', move to first char of val
-                            *v = '\0';
-                            v++;
-                            while (*v == ' ') {
-                                *v = '\0';
-                                v++;
-                            }
-                            clientctx_set_arg(ctx, k, v);
-                            printf("READING_ARGS k: '%s', v: '%s'\n", k, v);
-
-                            if (strcmp(k, "body-length") == 0)
-                                ctx->body_len = atoi(v);
-                        }
-                    }
-                    continue;
-                }
-                if (ctx->msgstate == READING_BODY) {
-                    assert(ctx->body_len > 0);
-                    if (ctx->body_len == 0) {
-                        ctx->msgstate = READING_COMPLETE;
+                        printf("cmd: '%s'\n", ctx->cmd->s);
                         continue;
                     }
-                    z = recv_bytes(readfd, ctx->buf, 0, ctx->body_len, ctx->body, &hasbody);
-                    if (z == Z_ERR) {
-                        print_error("recv_buf()");
+                    if (ctx->msgstate == READING_ARGS) {
+                        z = recv_line(readfd, ctx->buf, 0, strline, &hasline);
+                        if (z == Z_ERR) {
+                            print_error("recv_line()");
+                        }
+                        if (z == Z_EOF) {
+                            FD_CLR(readfd, &_readfds);
+                            shutdown(readfd, SHUT_RD);
+                        }
+                        if (!hasline)
+                            break;
+
+                        // Empty line read, no more args.
+                        if (strline->len == 0) {
+                            ctx->msgstate = READING_BODY;
+                            printf("reading_args empty line buf->len: %ld\n", ctx->buf->len);
+                            continue;
+                        }
+
+                        // Read one arg line: "key: val"
+                        char *k = strline->s;
+                        char *v = strchr(strline->s, ':');
+                        if (v == NULL)
+                            continue;
+
+                        // v points to ':', move to first char of val
+                        *v = '\0';
+                        v++;
+                        while (*v == ' ') {
+                            *v = '\0';
+                            v++;
+                        }
+                        clientctx_set_arg(ctx, k, v);
+                        printf("READING_ARGS k: '%s', v: '%s'\n", k, v);
+
+                        if (strcmp(k, "body-length") == 0)
+                            ctx->body_len = atoi(v);
+                        continue;
                     }
-                    if (z == Z_EOF) {
-                        FD_CLR(readfd, &_readfds);
-                        shutdown(readfd, SHUT_RD);
+                    if (ctx->msgstate == READING_BODY) {
+                        if (ctx->body_len == 0) {
+                            //todo: process ctx->cmd
+                            printf("command received:\n");
+                            printf("head: '%s'\n", ctx->cmd->s);
+                            for (int i=0; i < ctx->args->len; i++) {
+                                array_t *arg = ctx->args->items[i];
+                                assert(arg->len == 2);
+                                str_t *k = arg->items[0];
+                                str_t *v = arg->items[1];
+                                printf("arg %d [%s] => [%s]\n", i, k->s, v->s);
+                            }
+                            buf_append(ctx->body, "\0", 1);
+                            printf("body_len: %d\n", ctx->body_len);
+                            printf("body: %s\n", ctx->body->p);
+                                    
+                            ctx->msgstate = READING_HEAD;
+                            continue;
+                        }
+                        z = recv_bytes(readfd, ctx->buf, 0, ctx->body_len, ctx->body, &hasbody);
+                        if (z == Z_ERR) {
+                            print_error("recv_buf()");
+                        }
+                        if (z == Z_EOF) {
+                            FD_CLR(readfd, &_readfds);
+                            shutdown(readfd, SHUT_RD);
+                        }
+                        if (!hasbody)
+                            break;
+
+                        //todo: process ctx->cmd
+                        printf("command with body received:\n");
+                        printf("head: '%s'\n", ctx->cmd->s);
+                        for (int i=0; i < ctx->args->len; i++) {
+                            array_t *arg = ctx->args->items[i];
+                            assert(arg->len == 2);
+                            str_t *k = arg->items[0];
+                            str_t *v = arg->items[1];
+                            printf("arg %d [%s] => [%s]\n", i, k->s, v->s);
+                        }
+                        buf_append(ctx->body, "\0", 1);
+                        printf("body_len: %d\n", ctx->body_len);
+                        printf("body: %s\n", ctx->body->p);
+
+                        ctx->msgstate = READING_HEAD;
+                        continue;
                     }
-                    if (hasbody) {
-                        ctx->msgstate = READING_COMPLETE;
-                    }
-                }
+                } // while (1)
             }
         } // for _maxfd
 
@@ -269,6 +300,8 @@ void clientctx_set_arg(clientctx_t *ctx, char *arg_key, char *arg_val) {
     k = str_new_assign(arg_key);
     v = str_new_assign(arg_val);
     kv = array_new(2, (voidpfunc_t) str_free);
+    array_add(kv, k);
+    array_add(kv, v);
     array_add(ctx->args, kv);
 }
 clientctx_t *find_clientctx(array_t *ctxs, int fd) {

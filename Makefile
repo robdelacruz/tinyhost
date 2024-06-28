@@ -30,6 +30,10 @@ dep:
 
 t: $(OBJECTS)
 	$(CC) -o $@ $^ $(LDFLAGS)
+
+tclient: tclient.c clib.c cnet.c
+	$(CC) -o tclient $^ $(CFLAGS) $(LDFLAGS)
+
 clean:
 	rm -rf t
 
