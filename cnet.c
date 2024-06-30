@@ -11,7 +11,8 @@
 #include "cnet.h"
 
 // Number of bytes to send/recv at a time.
-#define NET_BUFSIZE 512
+//#define NET_BUFSIZE 512
+#define NET_BUFSIZE 4
 
 // Cumulatively reads socket bytes into buffer.
 // Returns one of the following:
