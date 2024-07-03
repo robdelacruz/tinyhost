@@ -113,6 +113,16 @@ void str_assign(str_t *str, const char *s) {
     str->s[s_len] = 0;
     str->len = s_len;
 }
+void str_assign_bytes(str_t *str, const char *bs, size_t len) {
+    if (len+1 > str->cap) {
+        str->cap *= 2;
+        str->s = (char*) realloc(str->s, str->cap);
+    }
+
+    memcpy(str->s, bs, len);
+    str->s[len] = 0;
+    str->len = len;
+}
 void str_sprintf(str_t *str, const char *fmt, ...) {
     char buf[4096];
     va_list args;

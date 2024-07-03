@@ -47,6 +47,7 @@ str_t *str_new(size_t cap);
 void str_free(str_t *str);
 str_t *str_new_assign(const char *s);
 void str_assign(str_t *str, const char *s);
+void str_assign_bytes(str_t *str, const char *bs, size_t len);
 void str_sprintf(str_t *str, const char *fmt, ...);
 void str_append(str_t *str, const char *s);
 

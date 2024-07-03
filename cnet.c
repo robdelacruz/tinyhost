@@ -129,17 +129,17 @@ int recv_buf(int fd, buf_t *buf, size_t nbytes, size_t *num_bytes_received) {
     return z;
 }
 
-int recv_line(int fd, buf_t *buf, size_t nbytes, str_t *ret_line, int *ret_line_complete) {
+int recv_line(int fd, buf_t *buf, size_t max_recv, str_t *out_line, int *complete) {
     int z;
     char readbuf[NET_BUFSIZE];
     size_t nread = 0;
 
-    if (nbytes == 0)
-        nbytes = sizeof(readbuf);
+    if (max_recv == 0)
+        max_recv = sizeof(readbuf);
 
-    while (nread < nbytes) {
+    while (nread < max_recv) {
         // receive as much bytes as readbuf can hold
-        int nblock = nbytes-nread;
+        int nblock = max_recv-nread;
         if (nblock > sizeof(readbuf))
             nblock = sizeof(readbuf);
 
@@ -184,10 +184,9 @@ int recv_line(int fd, buf_t *buf, size_t nbytes, str_t *ret_line, int *ret_line_
     // len=1
     for (int i=0; i < buf->len; i++) {
         if (buf->p[i] == '\n') {
-            // return line read to ret_line, excluding '\n'
+            // return line read to out_line, excluding '\n'
             buf->p[i] = '\0';
-            str_assign(ret_line, buf->p);
-            *ret_line_complete = 1;
+            str_assign(out_line, buf->p);
 
             // reset buf with the remaining chars to the right of '\n' 
             int num_extrachars = buf->len - (i+1);
@@ -195,34 +194,37 @@ int recv_line(int fd, buf_t *buf, size_t nbytes, str_t *ret_line, int *ret_line_
             buf->len = num_extrachars;
             memset(buf->p + buf->len, 0, buf->cap - buf->len);
 
+            *complete = 1;
             return z;
         }
     }
 
-    *ret_line_complete = 0;
+    *complete = 0;
     return z;
 }
 
-// Cumulatively receive into buf until recvbufsize bytes are accumulated.
+// Cumulatively receive into buf until nrecv bytes are accumulated.
 // Returns one of the following:
 //    1 (Z_OPEN) for socket open (socket data available)
 //    0 (Z_EOF) for EOF
 //   -1 (Z_ERR) for error
 //   -2 (Z_BLOCK) for blocked socket (no socket data available)
-// On return, if recvbufsize bytes were accumulated:
-//   ret_buf contains the bytes and *ret_buf_complete set to 1.
-// If accumulated bytes less than recvbufsize, *ret_buf_complete set to 0.
-int recv_bytes(int fd, buf_t *buf, size_t nbytes, size_t recvbufsize, buf_t *ret_buf, int *ret_buf_complete) {
+// On return, if nrecv bytes were accumulated:
+//   nrecv bytes are moved from buf to outbuf and *complete set to 1.
+// If not enough accumulated bytes received (< nrecv), *complete set to 0.
+//
+// outbuf array should have space for nrecv bytes.
+int recv_bytes(int fd, buf_t *buf, size_t max_recv, size_t nrecv, buf_t *outbuf, int *complete) {
     int z;
     char readbuf[NET_BUFSIZE];
     size_t nread = 0;
 
-    if (nbytes == 0)
-        nbytes = sizeof(readbuf);
+    if (max_recv == 0)
+        max_recv = sizeof(readbuf);
 
-    while (nread < nbytes) {
+    while (nread < max_recv) {
         // receive as much bytes as readbuf can hold
-        int nblock = nbytes-nread;
+        int nblock = max_recv-nread;
         if (nblock > sizeof(readbuf))
             nblock = sizeof(readbuf);
 
@@ -250,20 +252,19 @@ int recv_bytes(int fd, buf_t *buf, size_t nbytes, size_t recvbufsize, buf_t *ret
         z = Z_OPEN;
     }
 
-    if (buf->len >= recvbufsize) {
-        buf_clear(ret_buf);
-        buf_append(ret_buf, buf->p, recvbufsize);
-        *ret_buf_complete = 1;
+    if (buf->len >= nrecv) {
+        buf_clear(outbuf);
+        buf_append(outbuf, buf->p, nrecv);
 
-        int num_extrabytes = recvbufsize - buf->len;
-        memcpy(buf->p, buf->p + recvbufsize, num_extrabytes);
+        int num_extrabytes = nrecv - buf->len;
+        memcpy(buf->p, buf->p + nrecv, num_extrabytes);
         buf->len = num_extrabytes;
         memset(buf->p + buf->len, 0, buf->cap - buf->len);
 
+        *complete = 1;
         return z;
     }
-
-    *ret_buf_complete = 0;
+    *complete = 0;
     return z;
 }
 

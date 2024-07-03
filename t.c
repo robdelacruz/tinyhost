@@ -9,65 +9,40 @@
 #include <sys/wait.h>
 #include "clib.h"
 #include "cnet.h"
-
-// Message format:
-//
-// TH/0.1 login\n
-// hostname: rob\n
-// password: tiny\n
-// \n
-//
-// tinyhost/0.1 logout\n
-// \n
-//
-// TH/0.1 send message\n
-// hostname: guest1\n
-// body-length: 12\n
-// \n
-// Hello guest1
-//
-
-typedef struct {
-    int fd;
-    float ver;
-    str_t *req;
-    array_t *args;
-    buf_t *body;
-} msg_t;
+#include "msg.h"
 
 typedef enum {
-    READING_HEAD=0,
-    READING_ARGS,
-    READING_BODY,
-} msgstate_t;
+    HEAD=0,
+    BODY,
+} readstate_t;
 
 typedef struct {
     int fd;
     buf_t *buf;
+    buf_t *outbuf;
+
+    readstate_t readstate;
+    short msgver;
+    char msgno;
     int body_len;
-    msgstate_t msgstate;
-    msg_t *msg;
 } clientctx_t;
-
-msg_t *msg_new(int fd);
-void msg_free(msg_t *msg);
-void set_arg(array_t *args, char *arg_key, char *arg_val);
-void msg_print(msg_t *msg);
-
-clientctx_t *clientctx_new(int fd);
-void clientctx_free(clientctx_t *ctx);
-clientctx_t *find_clientctx(array_t *ctxs, int fd);
-void delete_clientctx(array_t *ctxs, int fd);
 
 void handle_sigint(int sig);
 void handle_sigchld(int sig);
+
+void disconnect_client(int fd);
+
+clientctx_t *clientctx_new(int fd);
+void clientctx_free(clientctx_t *ctx);
+void clientctx_reset(clientctx_t *ctx);
+clientctx_t *find_clientctx(array_t *ctxs, int fd);
+void delete_clientctx(array_t *ctxs, int fd);
 
 void print_buf(buf_t *buf);
 
 fd_set _readfds;
 int _maxfd=0;
 array_t *_ctxs;
-array_t *_pending_msgs;
 
 int main(int argc, char *argv[]) {
     int z;
@@ -76,9 +51,7 @@ int main(int argc, char *argv[]) {
     char *hostname = "localhost";
     char *port = "8001";
     str_t *serveripaddr = str_new(0);
-    str_t *strline = str_new(0);
-    int hasline = 0;
-    int hasbody = 0;
+    int complete = 0;
 
     signal(SIGPIPE, SIG_IGN);           // Don't abort on SIGPIPE
     signal(SIGINT, handle_sigint);      // exit on CTRL-C
@@ -97,7 +70,6 @@ int main(int argc, char *argv[]) {
     _maxfd = s0;
 
     _ctxs = array_new(0, (voidpfunc_t) clientctx_free);
-    _pending_msgs = array_new(0, (voidpfunc_t) msg_free);
 
     while (1) {
         fd_set readfds = _readfds;
@@ -115,7 +87,7 @@ int main(int argc, char *argv[]) {
             if (!FD_ISSET(i, &readfds))
                 continue;
 
-            // New connection, add client socket to readfds list.
+            // New connection
             if (i == s0) {
                 socklen_t sa_len = sizeof(struct sockaddr_in);
                 struct sockaddr_in sa;
@@ -129,130 +101,75 @@ int main(int argc, char *argv[]) {
                 if (clientfd > _maxfd)
                     _maxfd = clientfd;
 
-                // Add new client pipe
                 clientctx_t *ctx = clientctx_new(clientfd);
                 array_add(_ctxs, ctx);
 
                 printf("new clientfd: %d\n", clientfd);
                 continue;
-            } else {
-                // Client socket data available to read.
-                int readfd = i;
-                //printf("read data from clientfd %d\n", readfd);
+            }
 
-                clientctx_t *ctx = find_clientctx(_ctxs, readfd);
-                assert(ctx != NULL);
+            // Client socket data available to read.
+            int readfd = i;
+            //printf("read data from clientfd %d\n", readfd);
 
-                while (1) {
-                    if (ctx->msgstate == READING_HEAD) {
-                        assert(ctx->msg == NULL);
+            clientctx_t *ctx = find_clientctx(_ctxs, readfd);
+            assert(ctx != NULL);
 
-                        z = recv_line(readfd, ctx->buf, 0, strline, &hasline);
+            while (1) {
+                if (ctx->readstate == HEAD) {
+                    z = recv_bytes(readfd, ctx->buf, 0, MSGHEAD_SIZE, ctx->outbuf, &complete);
+                    if (z == Z_ERR) {
+                        print_error("recv_line()");
+                    }
+                    if (z == Z_EOF) {
+                        disconnect_client(readfd);
+                        break;
+                    }
+                    if (!complete)
+                        break;
+
+                    assert(ctx->outbuf->len == 4);
+
+                    // Validate and parse received message head.
+                    if (!read_msghead(ctx->outbuf->p, &ctx->msgver, &ctx->msgno)) {
+                        printf("Message head invalid (msgno: %d, ver: %d).\n", ctx->msgno, ctx->msgver);
+                        disconnect_client(readfd);
+                        clientctx_reset(ctx);
+                        break;
+                    }
+
+                    ctx->body_len = msgbody_bytes_size(ctx->msgno, ctx->msgver);
+                    ctx->readstate = BODY;
+                    continue;
+                }
+                if (ctx->readstate == BODY) {
+                    if (ctx->body_len > 0) {
+                        z = recv_bytes(readfd, ctx->buf, 0, ctx->body_len, ctx->outbuf, &complete);
                         if (z == Z_ERR) {
                             print_error("recv_line()");
                         }
                         if (z == Z_EOF) {
-                            FD_CLR(readfd, &_readfds);
-                            shutdown(readfd, SHUT_RD);
+                            disconnect_client(readfd);
+                            clientctx_reset(ctx);
+                            break;
                         }
-                        if (!hasline)
+                        if (!complete)
                             break;
 
-                        // Request line format:
-                        // TH/{version} {request}
-                        // TH/0.1 login
+                        assert(isvalid_msgno(ctx->msgno, ctx->msgver));
+                        BaseMsg *msg = create_msg(ctx->msgno, ctx->msgver);
+                        assert(msg != NULL);
 
-                        // Request line should start with "TH/", discard if doesn't match.
-                        if (strncmp(strline->s, "TH/", 3) != 0) {
-                            str_assign(strline, "");
-                            continue;
-                        }
-
-                        ctx->msg = msg_new(ctx->fd);
-
-                        char *pspace = strchr(strline->s, ' ');
-                        if (pspace != NULL) {
-                            *pspace = '\0';
-                            str_assign(ctx->msg->req, pspace+1);
-                        } else {
-                            str_assign(ctx->msg->req, "");
-                        }
-                        ctx->msg->ver = strtof(strline->s+3, NULL);
-                        str_assign(strline, "");
-                        ctx->msgstate = READING_ARGS;
+                        clientctx_reset(ctx);
                         continue;
                     }
-                    if (ctx->msgstate == READING_ARGS) {
-                        assert(ctx->msg != NULL);
-
-                        z = recv_line(readfd, ctx->buf, 0, strline, &hasline);
-                        if (z == Z_ERR) {
-                            print_error("recv_line()");
-                        }
-                        if (z == Z_EOF) {
-                            FD_CLR(readfd, &_readfds);
-                            shutdown(readfd, SHUT_RD);
-                        }
-                        if (!hasline)
-                            break;
-
-                        // Empty line read, no more args.
-                        if (strline->len == 0) {
-                            ctx->msgstate = READING_BODY;
-                            continue;
-                        }
-
-                        // Read one arg line: "key: val"
-                        char *k = strline->s;
-                        char *v = strchr(strline->s, ':');
-                        if (v == NULL)
-                            continue;
-
-                        // v points to ':', move to first char of val
-                        *v = '\0';
-                        v++;
-                        while (*v == ' ') {
-                            *v = '\0';
-                            v++;
-                        }
-                        set_arg(ctx->msg->args, k, v);
-                        if (strcmp(k, "body-length") == 0)
-                            ctx->body_len = atoi(v);
-                        continue;
-                    }
-                    if (ctx->msgstate == READING_BODY) {
-                        assert(ctx->msg != NULL);
-
-                        if (ctx->body_len > 0) {
-                            z = recv_bytes(readfd, ctx->buf, 0, ctx->body_len, ctx->msg->body, &hasbody);
-                            if (z == Z_ERR) {
-                                print_error("recv_buf()");
-                            }
-                            if (z == Z_EOF) {
-                                FD_CLR(readfd, &_readfds);
-                                shutdown(readfd, SHUT_RD);
-                            }
-                            if (!hasbody)
-                                break;
-                        }
-
-                        msg_print(ctx->msg);
-                        array_add(_pending_msgs, ctx->msg);
-
-                        ctx->msg = NULL;
-                        ctx->msgstate = READING_HEAD;
-                        continue;
-                    }
-                } // while (1)
+                }
             }
         } // for _maxfd
-
-        // todo: Process _pending_msgs
 
     } // while (1)
 
     str_free(serveripaddr);
-    str_free(strline);
     return 0;
 }
 
@@ -261,7 +178,6 @@ void handle_sigint(int sig) {
     fflush(stdout);
     exit(0);
 }
-
 void handle_sigchld(int sig) {
     int tmp_errno = errno;
     while (waitpid(-1, NULL, WNOHANG) > 0) {
@@ -269,75 +185,36 @@ void handle_sigchld(int sig) {
     errno = tmp_errno;
 }
 
-msg_t *msg_new(int fd) {
-    msg_t *msg = malloc(sizeof(msg_t));
-    msg->fd = fd;
-    msg->ver = 0.0;
-    msg->req = str_new(0);
-    msg->args = array_new(0, (voidpfunc_t) array_free);
-    msg->body = buf_new(0);
-    return msg;
-}
-void msg_free(msg_t *msg) {
-    str_free(msg->req);
-    array_free(msg->args);
-    buf_free(msg->body);
-    free(msg);
-}
-void set_arg(array_t *args, char *arg_key, char *arg_val) {
-    array_t *kv;
-    str_t *k, *v;
-
-    for (int i=0; i < args->len; i++) {
-        kv = (array_t *) args->items[i];
-        assert(kv->len == 2);
-        k = kv->items[0];
-        v = kv->items[1];
-
-        // Overwrite arg if it already exists.
-        if (strcmp(k->s, arg_key) == 0) {
-            str_assign(k, arg_key);
-            str_assign(v, arg_val);
-            return;
-        }
-    }
-    // Add new arg.
-    k = str_new_assign(arg_key);
-    v = str_new_assign(arg_val);
-    kv = array_new(2, (voidpfunc_t) str_free);
-    array_add(kv, k);
-    array_add(kv, v);
-    array_add(args, kv);
-}
-void msg_print(msg_t *msg) {
-    printf("MESSAGE:\n");
-    printf("ver: %0.2f\n", msg->ver);
-    printf("req: '%s'\n", msg->req->s);
-    for (int i=0; i < msg->args->len; i++) {
-        array_t *arg = msg->args->items[i];
-        assert(arg->len == 2);
-        str_t *k = arg->items[0];
-        str_t *v = arg->items[1];
-        printf("[%s] => '%s'\n", k->s, v->s);
-    }
-    if (msg->body->len > 0) {
-        buf_append(msg->body, "\0", 1);
-        printf("body (%ld bytes): %s\n", msg->body->len-1, msg->body->p);
-    }
+void disconnect_client(int fd) {
+    FD_CLR(fd, &_readfds);
+    shutdown(fd, SHUT_RDWR);
+    delete_clientctx(_ctxs, fd);
+    printf("Disconnected client %d\n", fd);
 }
 
 clientctx_t *clientctx_new(int fd) {
     clientctx_t *ctx = malloc(sizeof(clientctx_t));
     ctx->fd = fd;
     ctx->buf = buf_new(0);
+    ctx->outbuf = buf_new(0);
+
+    ctx->readstate = HEAD;
+    ctx->msgver = 0;
+    ctx->msgno = 0;
     ctx->body_len = 0;
-    ctx->msgstate = READING_HEAD;
-    ctx->msg = NULL;
     return ctx;
 }
 void clientctx_free(clientctx_t *ctx) {
     buf_free(ctx->buf);
+    buf_free(ctx->outbuf);
     free(ctx);
+}
+void clientctx_reset(clientctx_t *ctx) {
+    ctx->readstate = HEAD;
+    ctx->msgver = 0;
+    ctx->msgno = 0;
+    ctx->body_len = 0;
+    buf_clear(ctx->outbuf);
 }
 clientctx_t *find_clientctx(array_t *ctxs, int fd) {
     for (int i=0; i < ctxs->len; i++) {

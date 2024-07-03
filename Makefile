@@ -1,7 +1,7 @@
 CC=gcc
 CXX=g++
 
-CSOURCES=t.c clib.c cnet.c
+CSOURCES=t.c clib.c cnet.c msg.c
 CPPSOURCES=
 COBJECTS=$(patsubst %.c, %.o, $(CSOURCES))
 CPPOBJECTS=$(patsubst %.cpp, %.o, $(CPPSOURCES))
