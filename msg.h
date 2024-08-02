@@ -1,54 +1,55 @@
 #ifndef MSG_H
 #define MSG_H
 
-#define MSGHEAD_SIZE 5
+typedef int16_t int16;
 
 // Message numbers
-#define LOGIN     100
-#define LOGOUT    101
-#define SEND_TEXT 102
+#define MSGNO_ENTER 100
+#define MSGNO_BYE   101
+#define MSGNO_TEXT  102
 
 // Message body lengths
-#define LOGIN_LEN     35
-#define LOGOUT_LEN    0
-#define SEND_TEXT_LEN 90
+#define ENTER_LEN  32
+#define BYE_LEN    0
+#define TEXT_LEN   255
 
+// Base message bytes:
+// [0-3] "TINY"
+// [4-7] version number (4 ascii bytes)
+// [8] message number (1 byte: 1-255)
+#define BASEMSG_SIZE (4+4+1)
 typedef struct {
     char msgno;
+    int16 ver;
 } BaseMsg;
 
-// [0]  username (20 bytes)
-// [20] password (25 bytes)
-// len: 35 bytes
 typedef struct {
     char msgno;
-    char username[20+1];
-    char password[25+1];
-} LoginMsg;
+    int16 ver;
+    char alias[32+1];
+} EnterMsg;
 
 typedef struct {
     char msgno;
-} LogoutMsg;
+    int16 ver;
+} ByeMsg;
 
-// [0]  to_username (20 bytes)
-// [20] from_username (20 bytes)
-// [41] text (50 bytes)
-// len: 90 bytes
 typedef struct {
     char msgno;
-    char to_username[20+1];
-    char from_username[20+1];
-    char text[50+1];
-} SendTextMsg;
+    int16 ver;
+    char text[255+1];
+} TextMsg;
 
-int read_msghead(char *msghead, short *ver, char *msgno);
-int isvalid_msgno(char msgno, short ver);
-int msgbody_bytes_size(char msgno, short ver);
-void *create_msg(char msgno, short ver);
+int parse_basemsg_bytes(char *bs, char *msgno, int16 *ver);
+int isvalid_msgno(char msgno, int16 ver);
+int msgbody_bytes_size(char msgno, int16 ver);
+void *create_msg(char msgno, int16 ver);
 void free_msg(void *msg);
 
-void pack_loginmsg_to_bs(LoginMsg *loginmsg, char *bs);
-void unpack_bs_to_loginmsg(char *bs, LoginMsg *loginmsg);
+void unpack_msg_bytes(char *bs, BaseMsg *msg);
+
+void pack_entermsg_struct(EnterMsg *msg, char *bs);
+void unpack_entermsg_bytes(char *bs, EnterMsg *msg);
 
 #endif
 

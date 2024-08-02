@@ -11,20 +11,16 @@
 #include "cnet.h"
 #include "msg.h"
 
-typedef enum {
-    HEAD=0,
-    BODY,
-} readstate_t;
-
 typedef struct {
     int fd;
     buf_t *buf;
-    buf_t *outbuf;
+    buf_t *msgbuf;
+    BaseMsg *msg;
 
-    readstate_t readstate;
+    int fin_base;
     short msgver;
     char msgno;
-    int body_len;
+    int msgbytes_len;
 } clientctx_t;
 
 void handle_sigint(int sig);
@@ -116,10 +112,10 @@ int main(int argc, char *argv[]) {
             assert(ctx != NULL);
 
             while (1) {
-                if (ctx->readstate == HEAD) {
-                    z = recv_bytes(readfd, ctx->buf, 0, MSGHEAD_SIZE, ctx->outbuf, &complete);
+                if (ctx->fin_base == 0) {
+                    z = recv_bytes(readfd, ctx->buf, 0, BASEMSG_SIZE, NULL, &complete);
                     if (z == Z_ERR) {
-                        print_error("recv_line()");
+                        print_error("recv_bytes()");
                     }
                     if (z == Z_EOF) {
                         disconnect_client(readfd);
@@ -128,25 +124,25 @@ int main(int argc, char *argv[]) {
                     if (!complete)
                         break;
 
-                    assert(ctx->outbuf->len == 4);
+                    assert(ctx->buf->len >= BASEMSG_SIZE);
 
                     // Validate and parse received message head.
-                    if (!read_msghead(ctx->outbuf->p, &ctx->msgver, &ctx->msgno)) {
+                    if (!parse_basemsg_bytes(ctx->buf->p, &ctx->msgno, &ctx->msgver)) {
                         printf("Message head invalid (msgno: %d, ver: %d).\n", ctx->msgno, ctx->msgver);
                         disconnect_client(readfd);
                         clientctx_reset(ctx);
                         break;
                     }
 
-                    ctx->body_len = msgbody_bytes_size(ctx->msgno, ctx->msgver);
-                    ctx->readstate = BODY;
+                    ctx->msgbytes_len = BASEMSG_SIZE + msgbody_bytes_size(ctx->msgno, ctx->msgver);
+                    ctx->fin_base = 1;
                     continue;
-                }
-                if (ctx->readstate == BODY) {
-                    if (ctx->body_len > 0) {
-                        z = recv_bytes(readfd, ctx->buf, 0, ctx->body_len, ctx->outbuf, &complete);
+                } else {
+                    assert(ctx->fin_base == 1);
+                    if (ctx->msgbytes_len > BASEMSG_SIZE) {
+                        z = recv_bytes(readfd, ctx->buf, 0, ctx->msgbytes_len, ctx->msgbuf, &complete);
                         if (z == Z_ERR) {
-                            print_error("recv_line()");
+                            print_error("recv_bytes()");
                         }
                         if (z == Z_EOF) {
                             disconnect_client(readfd);
@@ -157,8 +153,10 @@ int main(int argc, char *argv[]) {
                             break;
 
                         assert(isvalid_msgno(ctx->msgno, ctx->msgver));
-                        BaseMsg *msg = create_msg(ctx->msgno, ctx->msgver);
-                        assert(msg != NULL);
+                        ctx->msg = create_msg(ctx->msgno, ctx->msgver);
+                        assert(ctx->msg != NULL);
+
+                        unpack_msg_bytes(ctx->msgbuf->p, ctx->msg);
 
                         clientctx_reset(ctx);
                         continue;
@@ -196,25 +194,31 @@ clientctx_t *clientctx_new(int fd) {
     clientctx_t *ctx = malloc(sizeof(clientctx_t));
     ctx->fd = fd;
     ctx->buf = buf_new(0);
-    ctx->outbuf = buf_new(0);
+    ctx->msgbuf = buf_new(0);
+    ctx->msg = NULL;
 
-    ctx->readstate = HEAD;
+    ctx->fin_base = 0;
     ctx->msgver = 0;
     ctx->msgno = 0;
-    ctx->body_len = 0;
+    ctx->msgbytes_len = 0;
     return ctx;
 }
 void clientctx_free(clientctx_t *ctx) {
     buf_free(ctx->buf);
-    buf_free(ctx->outbuf);
+    buf_free(ctx->msgbuf);
+    free_msg(ctx->msg);
     free(ctx);
 }
 void clientctx_reset(clientctx_t *ctx) {
-    ctx->readstate = HEAD;
+    ctx->fin_base = 0;
     ctx->msgver = 0;
     ctx->msgno = 0;
-    ctx->body_len = 0;
-    buf_clear(ctx->outbuf);
+    ctx->msgbytes_len = 0;
+
+    buf_clear(ctx->buf);
+    buf_clear(ctx->msgbuf);
+    free_msg(ctx->msg);
+    ctx->msg = NULL;
 }
 clientctx_t *find_clientctx(array_t *ctxs, int fd) {
     for (int i=0; i < ctxs->len; i++) {

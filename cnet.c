@@ -212,8 +212,6 @@ int recv_line(int fd, buf_t *buf, size_t max_recv, str_t *out_line, int *complet
 // On return, if nrecv bytes were accumulated:
 //   nrecv bytes are moved from buf to outbuf and *complete set to 1.
 // If not enough accumulated bytes received (< nrecv), *complete set to 0.
-//
-// outbuf array should have space for nrecv bytes.
 int recv_bytes(int fd, buf_t *buf, size_t max_recv, size_t nrecv, buf_t *outbuf, int *complete) {
     int z;
     char readbuf[NET_BUFSIZE];
@@ -253,14 +251,15 @@ int recv_bytes(int fd, buf_t *buf, size_t max_recv, size_t nrecv, buf_t *outbuf,
     }
 
     if (buf->len >= nrecv) {
-        buf_clear(outbuf);
-        buf_append(outbuf, buf->p, nrecv);
+        if (outbuf != NULL) {
+            buf_clear(outbuf);
+            buf_append(outbuf, buf->p, nrecv);
 
-        int num_extrabytes = nrecv - buf->len;
-        memcpy(buf->p, buf->p + nrecv, num_extrabytes);
-        buf->len = num_extrabytes;
-        memset(buf->p + buf->len, 0, buf->cap - buf->len);
-
+            int num_extrabytes = nrecv - buf->len;
+            memcpy(buf->p, buf->p + nrecv, num_extrabytes);
+            buf->len = num_extrabytes;
+            memset(buf->p + buf->len, 0, buf->cap - buf->len);
+        }
         *complete = 1;
         return z;
     }

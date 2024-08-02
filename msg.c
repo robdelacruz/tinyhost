@@ -7,58 +7,65 @@
 #include <arpa/inet.h>
 #include "msg.h"
 
-// Message head format:
-// [0-1] TH (2 bytes, ascii)
-// [2-3] version (2 bytes, 1-65535)
-// [4] msgnum (1 byte, 1-255)
-// [5...] message body
-int read_msghead(char *msghead, short *ver, char *msgno) {
-    if (strncmp(msghead, "TH", 2) != 0)
-        return 0;
+// Copy len bytes from src to dst, and null-terminate dst.
+// dst should be at least len+1 bytes to accomodate null terminator.
+static void assign_sz(char *dst, char *src, size_t len) {
+    memcpy(dst, src, len);
+    dst[len] = 0;
+}
 
-    *ver = ntohs(msghead[2]);
-    *msgno = msghead[4];
+// Base message bytes:
+// [0-3] "TINY"
+// [4-7] version number (4 ascii bytes)
+// [8] message number (1-255)
+int parse_basemsg_bytes(char *bs, char *msgno, int16 *ver) {
+    char versionstr[5];
+
+    *msgno = 0;
+    *ver = 0;
+
+    // signature starts with TINY followed by 4 digit version number.
+    // Ex. TINY0900 (version 0.9)
+    //     TINY2500 (version 2.5)
+    if (strncmp(bs, "TINY", 4) != 0)
+        return 0;
+    assign_sz(versionstr, bs+4, 4);
+
+    *msgno = bs[8];
+    *ver = atoi(versionstr);
     return isvalid_msgno(*msgno, *ver);
 }
-int isvalid_msgno(char msgno, short ver) {
-    if (ver != 1)
-        return 0;
-
-    switch (msgno) {
-    case LOGIN:
-    case LOGOUT:
-    case SEND_TEXT:
+int isvalid_msgno(char msgno, int16 ver) {
+    if (msgbody_bytes_size(msgno, ver) > 0)
         return 1;
-    }
     return 0;
 }
-
-int msgbody_bytes_size(char msgno, short ver) {
+int msgbody_bytes_size(char msgno, int16 ver) {
     if (ver != 1)
         return 0;
-    if (msgno == LOGIN)
-        return 35;
-    else if (msgno == LOGOUT)
-        return 0;
-    else if (msgno == SEND_TEXT)
-        return 90;
+    if (msgno == MSGNO_ENTER)
+        return ENTER_LEN;
+    else if (msgno == MSGNO_BYE)
+        return BYE_LEN;
+    else if (msgno == MSGNO_TEXT)
+        return TEXT_LEN;
     else
         return 0;
 }
 
-static size_t msg_structsize(char msgno, short ver) {
+static size_t msg_structsize(char msgno, int16 ver) {
     if (ver != 1)
         return 0;
-    if (msgno == LOGIN)
-        return sizeof(LoginMsg);
-    else if (msgno == LOGOUT)
-        return sizeof(LogoutMsg);
-    else if (msgno == SEND_TEXT)
-        return sizeof(SendTextMsg);
+    if (msgno == MSGNO_ENTER)
+        return sizeof(EnterMsg);
+    else if (msgno == MSGNO_BYE)
+        return sizeof(ByeMsg);
+    else if (msgno == MSGNO_TEXT)
+        return sizeof(TextMsg);
     else
         return 0;
 }
-void *create_msg(char msgno, short ver) {
+void *create_msg(char msgno, int16 ver) {
     BaseMsg *msg;
     size_t msgsize = msg_structsize(msgno, ver);
     assert(msgsize > 0);
@@ -69,25 +76,23 @@ void *create_msg(char msgno, short ver) {
     msg = (BaseMsg*) malloc(msgsize);
     memset(msg, 0, msgsize);
     msg->msgno = msgno;
+    msg->ver = ver;
     return msg;
 }
 void free_msg(void *msg) {
     free(msg);
 }
 
-// Copy len bytes from src to dst, and null-terminate dst.
-// dst should be at least len+1 bytes to accomodate null terminator.
-static void assign_sz(char *dst, char *src, size_t len) {
-    memcpy(dst, src, len);
-    dst[len] = 0;
+// bytes => message struct as determined by msgno/ver
+void unpack_msg_bytes(char *bs, BaseMsg *msg) {
 }
 
-// loginmsg => bs
-void pack_loginmsg_to_bs(LoginMsg *loginmsg, char *bs) {
+// EnterMsg => bytes
+void pack_entermsg_struct(EnterMsg *msg, char *bs) {
 }
 
-// bs => loginmsg
-void unpack_bs_to_loginmsg(char *bs, LoginMsg *loginmsg) {
+// bytes => EnterMsg
+void unpack_entermsg_bytes(char *bs, EnterMsg *msg) {
 }
 
 

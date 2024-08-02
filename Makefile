@@ -35,5 +35,5 @@ tclient: tclient.c clib.c cnet.c
 	$(CC) -o tclient $^ $(CFLAGS) $(LDFLAGS)
 
 clean:
-	rm -rf t
+	rm -rf t *.o
 
