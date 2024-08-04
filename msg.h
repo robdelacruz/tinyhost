@@ -4,52 +4,47 @@
 typedef int16_t int16;
 
 // Message numbers
-#define MSGNO_ENTER 100
-#define MSGNO_BYE   101
-#define MSGNO_TEXT  102
+#define TEXTMSG_NO 100
 
-// Message body lengths
-#define ENTER_LEN  32
-#define BYE_LEN    0
-#define TEXT_LEN   255
+// Message header binary format:
+// [4 bytes] protocol signature (Hardcoded to "TINY")
+// [5 bytes] protocol version number (Ex. "0.9", "1.1", "22.99")
+// [16 bytes] agent name (Ex. "tinyclient", "tinyserver")
+// [2 bytes] 16-bit int specifying message number (Ex. 100, 101)
+// [2 bytes] 16-bit int specifying the number of bytes in message body
+//
+// Ascii fields are always right padded with nulls to fill space.
+#define MSG_SIG_LEN   4
+#define MSG_VER_LEN   5
+#define MSG_AGENT_LEN 6
+#define MSG_MSGNO_LEN 2
+#define MSG_BODYLEN_LEN 2
+#define MSG_HEADER_LEN (MSG_SIG_LEN + MSG_VER_LEN + MSG_AGENT_LEN + MSG_MSGNO_LEN +  MSG_BODYLEN_LEN)
 
-// Base message bytes:
-// [0-3] "TINY"
-// [4-7] version number (4 ascii bytes)
-// [8] message number (1 byte: 1-255)
-#define BASEMSG_SIZE (4+4+1)
+#define MSG_OFFSET_SIG(p)     ((p)+0)
+#define MSG_OFFSET_VER(p)     (MSG_OFFSET_SIG(p) + MSG_SIG_LEN)
+#define MSG_OFFSET_AGENT(p)   (MSG_OFFSET_SIG(p) + MSG_SIG_LEN + MSG_VER_LEN)
+#define MSG_OFFSET_MSGNO(p)   (MSG_OFFSET_SIG(p) + MSG_SIG_LEN + MSG_VER_LEN + MSG_AGENT_LEN)
+#define MSG_OFFSET_BODYLEN(p) (MSG_OFFSET_SIG(p) + MSG_SIG_LEN + MSG_VER_LEN + MSG_AGENT_LEN + MSG_MSGNO_LEN)
+#define MSG_OFFSET_BODY(p)    (MSG_OFFSET_SIG(p) + MSG_HEADER_LEN)
+
+// TextMsg body binary format:
+#define TEXTMSG_ALIAS_LEN 32
+#define TEXTMSG_TEXT_LEN 255
+#define TEXTMSG_OFFSET_ALIAS(p) (MSG_OFFSET_BODY(p)+0)
+#define TEXTMSG_OFFSET_TEXT(p)  (MSG_OFFSET_ALIAS(p) + TEXTMSG_ALIAS_LEN)
+
+typedef struct {
+    float ver;
+    char agent[MSG_AGENT_LEN+1];
+    int16 msgno;
+} MsgHeader;
+
 typedef struct {
     char msgno;
-    int16 ver;
-} BaseMsg;
-
-typedef struct {
-    char msgno;
-    int16 ver;
-    char alias[32+1];
-} EnterMsg;
-
-typedef struct {
-    char msgno;
-    int16 ver;
-} ByeMsg;
-
-typedef struct {
-    char msgno;
-    int16 ver;
-    char text[255+1];
+    char alias[TEXTMSG_ALIAS_LEN+1];
+    char text[TEXTMSG_TEXT_LEN+1];
 } TextMsg;
-
-int parse_basemsg_bytes(char *bs, char *msgno, int16 *ver);
-int isvalid_msgno(char msgno, int16 ver);
-int msgbody_bytes_size(char msgno, int16 ver);
-void *create_msg(char msgno, int16 ver);
-void free_msg(void *msg);
-
-void unpack_msg_bytes(char *bs, BaseMsg *msg);
-
-void pack_entermsg_struct(EnterMsg *msg, char *bs);
-void unpack_entermsg_bytes(char *bs, EnterMsg *msg);
 
 #endif
 

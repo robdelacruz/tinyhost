@@ -15,11 +15,8 @@ typedef struct {
     int fd;
     buf_t *buf;
     buf_t *msgbuf;
-    BaseMsg *msg;
 
     int fin_base;
-    short msgver;
-    char msgno;
     int msgbytes_len;
 } clientctx_t;
 
@@ -39,6 +36,7 @@ void print_buf(buf_t *buf);
 fd_set _readfds;
 int _maxfd=0;
 array_t *_ctxs;
+array_t *_received_msgs;
 
 int main(int argc, char *argv[]) {
     int z;
@@ -112,56 +110,18 @@ int main(int argc, char *argv[]) {
             assert(ctx != NULL);
 
             while (1) {
-                if (ctx->fin_base == 0) {
-                    z = recv_bytes(readfd, ctx->buf, 0, BASEMSG_SIZE, NULL, &complete);
-                    if (z == Z_ERR) {
-                        print_error("recv_bytes()");
-                    }
-                    if (z == Z_EOF) {
-                        disconnect_client(readfd);
-                        break;
-                    }
-                    if (!complete)
-                        break;
-
-                    assert(ctx->buf->len >= BASEMSG_SIZE);
-
-                    // Validate and parse received message head.
-                    if (!parse_basemsg_bytes(ctx->buf->p, &ctx->msgno, &ctx->msgver)) {
-                        printf("Message head invalid (msgno: %d, ver: %d).\n", ctx->msgno, ctx->msgver);
-                        disconnect_client(readfd);
-                        clientctx_reset(ctx);
-                        break;
-                    }
-
-                    ctx->msgbytes_len = BASEMSG_SIZE + msgbody_bytes_size(ctx->msgno, ctx->msgver);
-                    ctx->fin_base = 1;
-                    continue;
-                } else {
-                    assert(ctx->fin_base == 1);
-                    if (ctx->msgbytes_len > BASEMSG_SIZE) {
-                        z = recv_bytes(readfd, ctx->buf, 0, ctx->msgbytes_len, ctx->msgbuf, &complete);
-                        if (z == Z_ERR) {
-                            print_error("recv_bytes()");
-                        }
-                        if (z == Z_EOF) {
-                            disconnect_client(readfd);
-                            clientctx_reset(ctx);
-                            break;
-                        }
-                        if (!complete)
-                            break;
-
-                        assert(isvalid_msgno(ctx->msgno, ctx->msgver));
-                        ctx->msg = create_msg(ctx->msgno, ctx->msgver);
-                        assert(ctx->msg != NULL);
-
-                        unpack_msg_bytes(ctx->msgbuf->p, ctx->msg);
-
-                        clientctx_reset(ctx);
-                        continue;
-                    }
+                z = recv_bytes(readfd, ctx->buf, 0, MSG_HEADER_LEN, NULL, &complete);
+                if (z == Z_ERR) {
+                    print_error("recv_bytes()");
                 }
+                if (z == Z_EOF) {
+                    disconnect_client(readfd);
+                    break;
+                }
+                if (!complete)
+                    break;
+
+                assert(ctx->buf->len >= MSG_HEADER_LEN);
             }
         } // for _maxfd
 
@@ -195,30 +155,22 @@ clientctx_t *clientctx_new(int fd) {
     ctx->fd = fd;
     ctx->buf = buf_new(0);
     ctx->msgbuf = buf_new(0);
-    ctx->msg = NULL;
 
     ctx->fin_base = 0;
-    ctx->msgver = 0;
-    ctx->msgno = 0;
     ctx->msgbytes_len = 0;
     return ctx;
 }
 void clientctx_free(clientctx_t *ctx) {
     buf_free(ctx->buf);
     buf_free(ctx->msgbuf);
-    free_msg(ctx->msg);
     free(ctx);
 }
 void clientctx_reset(clientctx_t *ctx) {
     ctx->fin_base = 0;
-    ctx->msgver = 0;
-    ctx->msgno = 0;
     ctx->msgbytes_len = 0;
 
     buf_clear(ctx->buf);
     buf_clear(ctx->msgbuf);
-    free_msg(ctx->msg);
-    ctx->msg = NULL;
 }
 clientctx_t *find_clientctx(array_t *ctxs, int fd) {
     for (int i=0; i < ctxs->len; i++) {
