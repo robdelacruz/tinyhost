@@ -34,6 +34,9 @@ t: $(OBJECTS)
 tclient: tclient.c clib.c cnet.c
 	$(CC) -o tclient $^ $(CFLAGS) $(LDFLAGS)
 
+tinytest: tinytest.c clib.c cnet.c msg.c
+	$(CC) -o tinytest $^ $(CFLAGS) $(LDFLAGS)
+
 clean:
-	rm -rf t *.o
+	rm -rf t tclient tinytest *.o
 

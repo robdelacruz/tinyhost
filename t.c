@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,13 +10,12 @@
 #include "cnet.h"
 #include "msg.h"
 
+#define NREADBYTES 32
+
 typedef struct {
     int fd;
-    buf_t *buf;
-    buf_t *msgbuf;
-
-    int fin_base;
-    int msgbytes_len;
+    buf_t *readbuf;
+    short bodylen;
 } clientctx_t;
 
 void handle_sigint(int sig);
@@ -45,7 +43,6 @@ int main(int argc, char *argv[]) {
     char *hostname = "localhost";
     char *port = "8001";
     str_t *serveripaddr = str_new(0);
-    int complete = 0;
 
     signal(SIGPIPE, SIG_IGN);           // Don't abort on SIGPIPE
     signal(SIGINT, handle_sigint);      // exit on CTRL-C
@@ -64,6 +61,7 @@ int main(int argc, char *argv[]) {
     _maxfd = s0;
 
     _ctxs = array_new(0, (voidpfunc_t) clientctx_free);
+    _received_msgs = array_new(0, (voidpfunc_t) free_msg);
 
     while (1) {
         fd_set readfds = _readfds;
@@ -109,8 +107,10 @@ int main(int argc, char *argv[]) {
             clientctx_t *ctx = find_clientctx(_ctxs, readfd);
             assert(ctx != NULL);
 
+            buf_t *readbuf = ctx->readbuf;
+
             while (1) {
-                z = recv_bytes(readfd, ctx->buf, 0, MSG_HEADER_LEN, NULL, &complete);
+                z = recv_buf(readfd, readbuf, NREADBYTES, NULL);
                 if (z == Z_ERR) {
                     print_error("recv_bytes()");
                 }
@@ -118,10 +118,39 @@ int main(int argc, char *argv[]) {
                     disconnect_client(readfd);
                     break;
                 }
-                if (!complete)
-                    break;
 
-                assert(ctx->buf->len >= MSG_HEADER_LEN);
+                assert(ctx->bodylen >= -1);
+
+                if (ctx->bodylen == -1) {
+                    if (readbuf->len >= MSG_HEADER_LEN) {
+                        short bodylen = ntohs(*MSG_OFFSET_BODYLEN(readbuf->p));
+                        if (bodylen < 0 || bodylen > MSG_MAX_BODYLEN) {
+                            printf("invalid bodylen in message (bodylen: %d)\n", bodylen);
+                            ctx->bodylen = 0;
+                            disconnect_client(readfd);
+                            break;
+                        }
+                        ctx->bodylen = bodylen;
+                    }
+                } else {
+                    int msglen = MSG_HEADER_LEN + ctx->bodylen;
+
+                    // Received entire message
+                    if (readbuf->len >= msglen) {
+                        void *msg = unpack_msg_bytes(readbuf->p);
+                        if (msg)
+                            array_add(_received_msgs, msg);
+
+                        // Move extra received bytes into start of readbuf.
+                        int nleftover = readbuf->len - msglen;
+                        memcpy(readbuf->p, readbuf->p + msglen, nleftover);
+                        readbuf->len = nleftover;
+                        memset(readbuf->p + readbuf->len, 0, readbuf->cap - readbuf->len);
+
+                        ctx->bodylen = -1;
+                    }
+                }
+
             }
         } // for _maxfd
 
@@ -153,24 +182,17 @@ void disconnect_client(int fd) {
 clientctx_t *clientctx_new(int fd) {
     clientctx_t *ctx = malloc(sizeof(clientctx_t));
     ctx->fd = fd;
-    ctx->buf = buf_new(0);
-    ctx->msgbuf = buf_new(0);
-
-    ctx->fin_base = 0;
-    ctx->msgbytes_len = 0;
+    ctx->readbuf = buf_new(0);
+    ctx->bodylen = -1;
     return ctx;
 }
 void clientctx_free(clientctx_t *ctx) {
-    buf_free(ctx->buf);
-    buf_free(ctx->msgbuf);
+    buf_free(ctx->readbuf);
     free(ctx);
 }
 void clientctx_reset(clientctx_t *ctx) {
-    ctx->fin_base = 0;
-    ctx->msgbytes_len = 0;
-
-    buf_clear(ctx->buf);
-    buf_clear(ctx->msgbuf);
+    buf_clear(ctx->readbuf);
+    ctx->bodylen = -1;
 }
 clientctx_t *find_clientctx(array_t *ctxs, int fd) {
     for (int i=0; i < ctxs->len; i++) {
