@@ -31,7 +31,7 @@ dep:
 t: $(OBJECTS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
-tclient: tclient.c clib.c cnet.c
+tclient: tclient.c clib.c cnet.c msg.c
 	$(CC) -o tclient $^ $(CFLAGS) $(LDFLAGS)
 
 tinytest: tinytest.c clib.c cnet.c msg.c

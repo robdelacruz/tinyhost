@@ -141,6 +141,14 @@ int main(int argc, char *argv[]) {
                         if (msg)
                             array_add(_received_msgs, msg);
 
+                        short msgno = MSGNO(msg);
+                        printf("Received message (msgno: %d)\n", msgno);
+
+                        if (msgno == TEXTMSG_NO) {
+                            TextMsg *tm = (TextMsg *) msg;
+                            printf("TextMsg - alias: '%s', text: '%s'\n", tm->alias, tm->text);
+                        }
+
                         // Move extra received bytes into start of readbuf.
                         int nleftover = readbuf->len - msglen;
                         memcpy(readbuf->p, readbuf->p + msglen, nleftover);
@@ -157,6 +165,7 @@ int main(int argc, char *argv[]) {
     } // while (1)
 
     str_free(serveripaddr);
+    close(s0);
     return 0;
 }
 
