@@ -12,10 +12,16 @@
 
 #define NREADBYTES 32
 
+enum RecvState {
+    RECV_SIG,
+    RECV_HEADER,
+    RECV_BODY
+};
+
 typedef struct {
     int fd;
     buf_t *readbuf;
-    short bodylen;
+    enum RecvState recvstate;
 } clientctx_t;
 
 void handle_sigint(int sig);
@@ -119,21 +125,31 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                assert(ctx->bodylen >= -1);
+                if (ctx->recvstate == RECV_SIG) {
+                    if (readbuf->len < MSG_SIG_LEN)
+                        break;
 
-                if (ctx->bodylen == -1) {
-                    if (readbuf->len >= MSG_HEADER_LEN) {
-                        short bodylen = ntohs(*MSG_OFFSET_BODYLEN(readbuf->p));
-                        if (bodylen < 0 || bodylen > MSG_MAX_BODYLEN) {
-                            printf("invalid bodylen in message (bodylen: %d)\n", bodylen);
-                            ctx->bodylen = 0;
-                            disconnect_client(readfd);
-                            break;
-                        }
-                        ctx->bodylen = bodylen;
+                    if (strncmp(readbuf->p, MSG_SIG, MSG_SIG_LEN) != 0) {
+                        printf("Invalid header sig in message.\n");
+                        disconnect_client(readfd);
                     }
-                } else {
-                    int msglen = MSG_HEADER_LEN + ctx->bodylen;
+                    ctx->recvstate = RECV_HEADER;
+                } else if (ctx->recvstate == RECV_HEADER) {
+                    if (readbuf->len < MSG_HEADER_LEN)
+                        break;
+
+                    short bodylen = ntohs(*MSG_OFFSET_BODYLEN(readbuf->p));
+                    if (bodylen > MSG_MAX_BODYLEN) {
+                        printf("Invalid bodylen in message (bodylen: %d)\n", bodylen);
+                        ctx->recvstate = RECV_SIG;
+                        disconnect_client(readfd);
+                        break;
+                    }
+                    ctx->recvstate = RECV_BODY;
+                } else if (ctx->recvstate == RECV_BODY) {
+                    short bodylen = ntohs(*MSG_OFFSET_BODYLEN(readbuf->p));
+                    assert(bodylen <= MSG_MAX_BODYLEN);
+                    int msglen = MSG_HEADER_LEN + bodylen;
 
                     // Received entire message
                     if (readbuf->len >= msglen) {
@@ -155,7 +171,7 @@ int main(int argc, char *argv[]) {
                         readbuf->len = nleftover;
                         memset(readbuf->p + readbuf->len, 0, readbuf->cap - readbuf->len);
 
-                        ctx->bodylen = -1;
+                        ctx->recvstate = RECV_SIG;
                     }
                 }
 
@@ -192,7 +208,7 @@ clientctx_t *clientctx_new(int fd) {
     clientctx_t *ctx = malloc(sizeof(clientctx_t));
     ctx->fd = fd;
     ctx->readbuf = buf_new(0);
-    ctx->bodylen = -1;
+    ctx->recvstate = RECV_SIG;
     return ctx;
 }
 void clientctx_free(clientctx_t *ctx) {
@@ -201,7 +217,7 @@ void clientctx_free(clientctx_t *ctx) {
 }
 void clientctx_reset(clientctx_t *ctx) {
     buf_clear(ctx->readbuf);
-    ctx->bodylen = -1;
+    ctx->recvstate = RECV_SIG;
 }
 clientctx_t *find_clientctx(array_t *ctxs, int fd) {
     for (int i=0; i < ctxs->len; i++) {
