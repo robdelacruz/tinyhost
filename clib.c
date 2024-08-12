@@ -77,6 +77,22 @@ void buf_append(buf_t *buf, char *bs, size_t len) {
     memcpy(buf->p + buf->len, bs, len);
     buf->len += len;
 }
+int buf_find(buf_t *buf, char *k, size_t k_len) {
+    char *p = memmem(buf->p, buf->len, k, k_len);
+    if (p == NULL)
+        return -1;
+    return p - buf->p;
+}
+void buf_stripleft(buf_t *buf, size_t len) {
+    if (len == 0)
+        return;
+    if (len >= buf->len) {
+        buf->len = 0;
+        return;
+    }
+    memcpy(buf->p, buf->p + len, buf->len - len);
+    buf->len = buf->len - len;
+}
 
 str_t *str_new(size_t cap) {
     str_t *str;

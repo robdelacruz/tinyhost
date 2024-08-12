@@ -42,6 +42,8 @@ void buf_free(buf_t *buf);
 void buf_resize(buf_t *buf, size_t cap);
 void buf_clear(buf_t *buf);
 void buf_append(buf_t *buf, char *bs, size_t len);
+int buf_find(buf_t *buf, char *k, size_t k_len);
+void buf_stripleft(buf_t *buf, size_t len);
 
 str_t *str_new(size_t cap);
 void str_free(str_t *str);

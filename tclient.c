@@ -41,6 +41,9 @@ int main(int argc, char *argv[]) {
     get_ipaddr_string(&sa, serveripaddr);
     printf("Connected to %s:%s.\n", serveripaddr->s, server_port);
 
+    char *skipchars = "some chars to skip some chars to skip some chars to skip some chars to skip";
+    sendbytes(s0, skipchars, strlen(skipchars));
+
     TextMsg tm;
     tm.msgno = TEXTMSG_NO;
     strcpy(tm.alias, "rob");
@@ -48,7 +51,14 @@ int main(int argc, char *argv[]) {
 
     char *msgbs = pack_msg(&tm);
     assert(msgbs != NULL);
+    send(s0, msgbs, MSG_HEADER_LEN + TEXTMSG_LEN, 0);
 
+    sleep(1);
+
+    sendbytes(s0, skipchars, strlen(skipchars));
+    strcpy(tm.text, "Life is a flower so precious in your hand...");
+    msgbs = pack_msg(&tm);
+    assert(msgbs != NULL);
     send(s0, msgbs, MSG_HEADER_LEN + TEXTMSG_LEN, 0);
 
     sleep(2);

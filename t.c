@@ -129,10 +129,13 @@ int main(int argc, char *argv[]) {
                     if (readbuf->len < MSG_SIG_LEN)
                         break;
 
-                    if (strncmp(readbuf->p, MSG_SIG, MSG_SIG_LEN) != 0) {
-                        printf("Invalid header sig in message.\n");
-                        disconnect_client(readfd);
+                    size_t isig = buf_find(readbuf, MSG_SIG, MSG_SIG_LEN);
+                    if (isig == -1) {
+                        printf("Skipping invalid header bytes.\n");
+                        buf_clear(readbuf);
+                        break;
                     }
+                    buf_stripleft(readbuf, isig);
                     ctx->recvstate = RECV_HEADER;
                 } else if (ctx->recvstate == RECV_HEADER) {
                     if (readbuf->len < MSG_HEADER_LEN)
